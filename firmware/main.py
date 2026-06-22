@@ -2,21 +2,17 @@ import time
 from machine import Pin, SPI
 import framebuf
 
-print("[START] Spouštím integrovaný program...")
+print("[START] Spouštím kompletně vyčištěný program...")
 
-# === INTEGROVANÁ KNIHOVNA ===
-EPD_WIDTH       = 128
-EPD_HEIGHT      = 250
-
-class EPD_Direct:
+class EPD_Landscape_Fix:
     def __init__(self, spi, cs, dc, rst, busy):
         self.spi = spi
         self.cs = cs
         self.dc = dc
         self.rst = rst
         self.busy = busy
-        self.width = EPD_WIDTH
-        self.height = EPD_HEIGHT
+        # Hardwarové fixní rozměry čipu SSD1680
+        self.buffer_size = 4000 # 128 * 250 // 8
 
     def digital_write(self, pin, value):
         pin.value(value)
@@ -40,9 +36,8 @@ class EPD_Direct:
         self.digital_write(self.cs, 1)
 
     def wait_until_idle(self):
-        print("Čekám na BUSY pin... (aktuální hodnota:", self.digital_read(self.busy), ")")
         while(self.digital_read(self.busy) == 1):
-            self.delay_ms(100)
+            self.delay_ms(50)
 
     def init(self):
         self.reset()
@@ -57,30 +52,25 @@ class EPD_Direct:
         self.send_data(0x00)
         
         self.send_command(0x11) # Data entry mode
-        self.send_data(0x03) # X increment, Y increment
+        self.send_data(0x03) # X inc, Y inc
         
-        self.send_command(0x44) # Set Ram X-address Start/End position
+        self.send_command(0x44) # Set Ram X-address Start/End
         self.send_data(0x00)
-        self.send_data(0x0F) # 0x0F = 15 -> (15+1)*8 = 128 pixelů
+        self.send_data(0x0F) # 128 pixelů
         
-        self.send_command(0x45) # Set Ram Y-address Start/End position
+        self.send_command(0x45) # Set Ram Y-address Start/End
         self.send_data(0x00)
         self.send_data(0x00)
-        self.send_data(0xF9) # 0xF9 = 249 -> 250 pixelů
+        self.send_data(0xF9) # 250 pixelů
         self.send_data(0x00)
         
         self.send_command(0x3C) # Border Waveform
         self.send_data(0x05)
         
-        self.send_command(0x18) # Read built-in temperature sensor
+        self.send_command(0x18) # Temperature sensor
         self.send_data(0x80)
         
-        self.send_command(0x4E) # Set RAM x address counter to 0
-        self.send_data(0x00)
-        
-        self.send_command(0x4F) # Set RAM y address counter to 0
-        self.send_data(0x00)
-        self.send_data(0x00)
+        self.set_cursor(0, 0)
         self.wait_until_idle()
 
     def reset(self):
@@ -91,30 +81,41 @@ class EPD_Direct:
         self.digital_write(self.rst, 1)
         self.delay_ms(200)
 
+    def set_cursor(self, x, y):
+        self.send_command(0x4E) # RAM x address counter
+        self.send_data(x & 0xFF)
+        self.send_command(0x4F) # RAM y address counter
+        self.send_data(y & 0xFF)
+        self.send_data((y >> 8) & 0xFF)
+
     def display_frame(self):
-        # Spustí aktualizaci displeje pro novější typy čipů
         self.send_command(0x22)
-        self.send_data(0xF7) # Kompletní update (všech vrstev)
-        self.send_command(0x20) # Aktivace
+        self.send_data(0xF7) # Tvůj funkční refresh kód pro novou revizi
+        self.send_command(0x20)
         self.wait_until_idle()
 
-    def set_frame_memory(self, image, x, y, image_width, image_height):
-        self.send_command(0x24)
-        for i in range(0, len(image)):
-            self.send_data(image[i])
+    def set_frame_memory(self, image):
+        self.set_cursor(0, 0)
+        self.send_command(0x24) # Zápis do RAM
+        self.digital_write(self.dc, 1)
+        self.digital_write(self.cs, 0)
+        self.spi.write(image)
+        self.digital_write(self.cs, 1)
 
     def clear_frame_memory(self, color):
+        self.set_cursor(0, 0)
         self.send_command(0x24)
-        for i in range(0, int(self.width * self.height / 8)):
-            self.send_data(color)
+        self.digital_write(self.dc, 1)
+        self.digital_write(self.cs, 0)
+        # Vytvoříme čisté pole o správné velikosti 4000 bajtů a pošleme ho naráz
+        self.spi.write(bytes([color] * self.buffer_size))
+        self.digital_write(self.cs, 1)
 
     def sleep(self):
         self.send_command(0x10)
         self.send_data(0x01)
 
-# === SAMOTNÝ MAIN KÓD ===
-
-# Konfigurace pinů (přesně podle tvého zapojení)
+# === KONFIGURACE HARDWARU ===
 sck_pin = Pin(2)
 mosi_pin = Pin(3)
 cs_pin = Pin(5, Pin.OUT)
@@ -122,13 +123,11 @@ dc_pin = Pin(0, Pin.OUT)
 rst_pin = Pin(1, Pin.OUT)
 busy_pin = Pin(4, Pin.IN, Pin.PULL_DOWN) 
 
-print("[1] Inicializuji hardwarové SPI...")
-# Snížili jsme baudrate na 2 000 000 (2 MHz) pro maximální stabilitu
-# a ujistili se, že phase=0 a polarity=0
+print("[1] Inicializuji SPI...")
 spi = SPI(0, baudrate=2000000, polarity=0, phase=0, sck=sck_pin, mosi=mosi_pin)
 
-print("[2] Vytvářím objekt EPD_Direct...")
-epd = EPD_Direct(spi, cs_pin, dc_pin, rst_pin, busy_pin)
+print("[2] Vytvářím objekt displeje...")
+epd = EPD_Landscape_Fix(spi, cs_pin, dc_pin, rst_pin, busy_pin)
 
 print("[3] Volám epd.init()...")
 epd.init()
@@ -137,25 +136,44 @@ print("[4] Inicializace hotova. Mažu displej...")
 epd.clear_frame_memory(0xFF)
 epd.display_frame()
 
-# Nastavení rozměrů pro buffer (šířka musí být 128)
-WIDTH = 128
-HEIGHT = 250
+# === SOFTWAROVÉ KRESLENÍ NA ŠÍŘKU ===
+WIDTH_LANDSCAPE = 256  # ZMĚNA z 250 na 256 kvůli dělitelnosti 8
+HEIGHT_LANDSCAPE = 122 # Viditelná výška
 
-buf = bytearray(WIDTH * HEIGHT // 8)
-fb = framebuf.FrameBuffer(buf, WIDTH, HEIGHT, framebuf.MONO_HLSB)
+# Kreslící buffer na šířku (teď už bude mít správný počet bajtů)
+draw_buf = bytearray(WIDTH_LANDSCAPE * HEIGHT_LANDSCAPE // 8)
+fb_landscape = framebuf.FrameBuffer(draw_buf, WIDTH_LANDSCAPE, HEIGHT_LANDSCAPE, framebuf.MONO_HLSB)
+fb_landscape.fill(1) # Vyplnit bílou
 
-# Vyplníme displej bílou barvou
-fb.fill(1)
+# Tady píšeme horizontálně (omezení rámečku na 240 nechej, ať je to hezky centrované)
+fb_landscape.text("Waveshare 2.13 v2.1", 10, 15, 0)
+fb_landscape.text("Konecne na sirku!", 10, 40, 0)
+fb_landscape.text("Pico 2W jede bomby.", 10, 65, 0)
+fb_landscape.rect(0, 0, 250, 120, 0)
 
-# Nakreslíme text a rámeček
-fb.text("Ahoj!", 10, 20, 0)
-fb.text("Pico 2W", 10, 40, 0)
-# Rámeček vykreslíme raději jen do šířky 122, ať je centrovaný na viditelnou část
-fb.rect(5, 5, 112, 240, 0) 
+# Cílový buffer na výšku (128x250 = přesně 4000 bajtů)
+DISP_WIDTH = 128
+DISP_HEIGHT = 250
+display_buf = bytearray(DISP_WIDTH * DISP_HEIGHT // 8)
+fb_display = framebuf.FrameBuffer(display_buf, DISP_WIDTH, DISP_HEIGHT, framebuf.MONO_HLSB)
+fb_display.fill(1)
 
-print("[5] Vykresluji text...")
-# Teď už velikost bufferu přesně sedí na matematiku ovladače
-epd.set_frame_memory(buf, 0, 0, WIDTH, HEIGHT)
+print("Přetáčím pixely do nativní orientace...")
+for x in range(WIDTH_LANDSCAPE):
+    for y in range(HEIGHT_LANDSCAPE):
+        pixel = fb_landscape.pixel(x, y)
+        
+        # OPRAVA: Odečetli jsme 4 pixely (offset), abychom obraz posunuli 
+        # směrem dolů od uříznutého okraje a vycentrovali ho
+        new_x = (DISP_WIDTH - 1 - y) - 7
+        new_y = x
+        
+        # Kontrola, aby zapisovaný pixel neskočil mimo rozsah 0 až 127
+        if 0 <= new_x < DISP_WIDTH:
+            fb_display.pixel(new_x, new_y, pixel)
+
+print("[5] Posílám otočená data na displej...")
+epd.set_frame_memory(display_buf)
 epd.display_frame()
 
 print("[6] Ukládám displej ke spánku.")
