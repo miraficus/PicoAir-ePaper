@@ -136,22 +136,90 @@ print("[4] Inicializace hotova. Mažu displej...")
 epd.clear_frame_memory(0xFF)
 epd.display_frame()
 
-# === SOFTWAROVÉ KRESLENÍ NA ŠÍŘKU ===
-WIDTH_LANDSCAPE = 256  # ZMĚNA z 250 na 256 kvůli dělitelnosti 8
-HEIGHT_LANDSCAPE = 122 # Viditelná výška
+from machine import ADC
 
-# Kreslící buffer na šířku (teď už bude mít správný počet bajtů)
+# Inicializace interního senzoru teploty (u RP2350/Pico 2W je to ADC kanál 4)
+adc_temp = ADC(4)
+
+def get_cpu_temp():
+    # Přečteme syrovou hodnotu z ADC (0-65535)
+    raw = adc_temp.read_u16()
+    # Přepočet na napětí (Pico 2W používá 3.3V referenci)
+    voltage = raw * 3.3 / 65535
+    # Vzorec pro teplotní senzor v RP2350:
+    # Teplota = 27 - (voltage - 0.706) / 0.001721
+    temperature = 27 - (voltage - 0.706) / 0.001721
+    return round(temperature, 1) # Zaokrouhlíme na 1 desetinné místo
+
+# === SOFTWAROVÉ KRESLENÍ NA ŠÍŘKU ===
+WIDTH_LANDSCAPE = 256
+HEIGHT_LANDSCAPE = 122
+
 draw_buf = bytearray(WIDTH_LANDSCAPE * HEIGHT_LANDSCAPE // 8)
 fb_landscape = framebuf.FrameBuffer(draw_buf, WIDTH_LANDSCAPE, HEIGHT_LANDSCAPE, framebuf.MONO_HLSB)
 fb_landscape.fill(1) # Vyplnit bílou
 
-# Tady píšeme horizontálně (omezení rámečku na 240 nechej, ať je to hezky centrované)
-fb_landscape.text("Waveshare 2.13 v2.1", 10, 15, 0)
-fb_landscape.text("Konecne na sirku!", 10, 40, 0)
-fb_landscape.text("Pico 2W jede bomby.", 10, 65, 0)
-fb_landscape.rect(0, 0, 250, 120, 0)
+# --- UPRAVENÁ FUNKCE PRO TEXT 2x VĚTŠÍ (S VOLBOU BARVY) ---
+def text_large(text, start_x, start_y, color=0):
+    temp_w = len(text) * 8
+    temp_h = 8
+    temp_buf = bytearray(temp_w * temp_h // 8)
+    temp_fb = framebuf.FrameBuffer(temp_buf, temp_w, temp_h, framebuf.MONO_HLSB)
+    
+    # Pokud chceme kreslit BÍLÝ velký text (color=1), musíme mini buffer 
+    # nejdříve vyplnit ČERNĚ (0). Pokud chceme ČERNÝ text, vyplníme ho BÍLĚ (1).
+    if color == 1:
+        temp_fb.fill(0)
+        temp_fb.text(text, 0, 0, 1) # Píšeme bíle do černého okna
+    else:
+        temp_fb.fill(1)
+        temp_fb.text(text, 0, 0, 0) # Píšeme černě do bílého okna
+    
+    # Překreslení do hlavního bufferu
+    for x in range(temp_w):
+        for y in range(temp_h):
+            # Pokud se pixel v mini bufferu shoduje s barvou textu, vykreslíme ho
+            if temp_fb.pixel(x, y) == color:
+                target_x = start_x + (x * 2)
+                target_y = start_y + (y * 2)
+                
+                # Vykreslíme čtvereček 2x2 zvolenou barvou
+                fb_landscape.pixel(target_x, target_y, color)
+                fb_landscape.pixel(target_x + 1, target_y, color)
+                fb_landscape.pixel(target_x, target_y + 1, color)
+                fb_landscape.pixel(target_x + 1, target_y + 1, color)
 
-# Cílový buffer na výšku (128x250 = přesně 4000 bajtů)
+# 1. Tlustý rámeček (3 pixely do sebe)
+fb_landscape.rect(0, 0, 250, 120, 0)
+fb_landscape.rect(1, 1, 248, 118, 0)
+fb_landscape.rect(2, 2, 246, 116, 0)
+
+# --- INVERZNÍ HORNÍ LIŠTA (Bílý text na černém pozadí) ---
+# Vykreslíme plný černý obdélník podél horního okraje (uvnitř rámečku)
+# Souřadnice: X=3, Y=3, šířka=244, výška=16, barva=0 (černá)
+fb_landscape.fill_rect(3, 3, 244, 16, 0)
+
+# Napíšeme text BÍLOU barvou (1) do tohoto černého obdélníku
+fb_landscape.text("PicoAir Stanice", 15, 6, 1)
+fb_landscape.text("V 1.0", 200, 6, 1)
+
+# 2. Vykreslení hodnot velkým písmem (posunuto kousek dolů, aby to nebylo nalepené na liště)
+cpu_temperature = get_cpu_temp()
+temp_string = "{}C".format(cpu_temperature)
+
+text_large("Teplota:", 15, 27, 0)
+text_large(temp_string, 145, 27)
+
+text_large("Vlhkost:", 15, 50, 0)
+text_large("--%", 145, 50) 
+
+text_large("PPM:", 15, 73, 0)
+text_large("----", 145, 73)
+
+text_large("Cas:", 15, 94, 0)
+text_large("--:--", 145, 94)
+
+# === PŮVODNÍ ROTAČNÍ SMYČKA (NEMĚNIT) ===
 DISP_WIDTH = 128
 DISP_HEIGHT = 250
 display_buf = bytearray(DISP_WIDTH * DISP_HEIGHT // 8)
@@ -162,13 +230,8 @@ print("Přetáčím pixely do nativní orientace...")
 for x in range(WIDTH_LANDSCAPE):
     for y in range(HEIGHT_LANDSCAPE):
         pixel = fb_landscape.pixel(x, y)
-        
-        # OPRAVA: Odečetli jsme 4 pixely (offset), abychom obraz posunuli 
-        # směrem dolů od uříznutého okraje a vycentrovali ho
         new_x = (DISP_WIDTH - 1 - y) - 7
         new_y = x
-        
-        # Kontrola, aby zapisovaný pixel neskočil mimo rozsah 0 až 127
         if 0 <= new_x < DISP_WIDTH:
             fb_display.pixel(new_x, new_y, pixel)
 
