@@ -3,6 +3,10 @@
 
 I used GoogleAI to generate this README.md so i know what to buy, what features i would like and how to connect it together. I will translate it to english at a later date.
 
+### Links to add later
+https://github.com/FireHawken/micropython-waveshare-epd2in13
+https://micropython.org/download/RPI_PICO2_W/
+
 # 🍃 PicoAir-ePaper (Open-Source CO2 & Meteo Stanice)
 
 Tento projekt představuje plně autonomní, nízkoenergetickou a naprosto tichou stanici pro měření kvality vzduchu (**CO₂ v ppm**), teploty a vlhkosti. 
