@@ -4,6 +4,48 @@ import framebuf
 
 print("[START] Spouštím kompletně vyčištěný program...")
 
+def load_env_config():
+    # Výchozí hodnoty v češtině pro případ, že .env soubor selže
+    config = {
+        "DARK_MODE": "0",
+        "UNITS": "C",
+        "TEXT_TEMPERATURE": "Teplota:",
+        "TEXT_HUMIDITY": "Vlhkost:",
+        "TEXT_PPM": "PPM:",
+        "TEXT_TIME": "Cas:"
+    }
+    try:
+        with open(".env", "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    key, value = line.split("=", 1)
+                    config[key.strip()] = value.strip()
+    except Exception:
+        pass
+    return config
+
+# Načteme konfiguraci do globálních proměnných
+env = load_env_config()
+
+DARK_MODE = int(env["DARK_MODE"])
+if DARK_MODE == 1:
+    COLOR_BG = 0  
+    COLOR_FG = 1  
+else:
+    COLOR_BG = 1  
+    COLOR_FG = 0  
+
+USER_UNITS = env["UNITS"].upper()
+
+# Načtení lokalizovaných textů (přidáme dvojtečku na konec, pokud ji tam nemáš)
+TXT_TEMP = env["TEXT_TEMPERATURE"] + ":" if not env["TEXT_TEMPERATURE"].endswith(":") else env["TEXT_TEMPERATURE"]
+TXT_HUMI = env["TEXT_HUMIDITY"] + ":" if not env["TEXT_HUMIDITY"].endswith(":") else env["TEXT_HUMIDITY"]
+TXT_PPM  = env["TEXT_PPM"] + ":" if not env["TEXT_PPM"].endswith(":") else env["TEXT_PPM"]
+TXT_TIME = env["TEXT_TIME"] + ":" if not env["TEXT_TIME"].endswith(":") else env["TEXT_TIME"]
+
 class EPD_Landscape_Fix:
     def __init__(self, spi, cs, dc, rst, busy):
         self.spi = spi
@@ -142,14 +184,16 @@ from machine import ADC
 adc_temp = ADC(4)
 
 def get_cpu_temp():
-    # Přečteme syrovou hodnotu z ADC (0-65535)
     raw = adc_temp.read_u16()
-    # Přepočet na napětí (Pico 2W používá 3.3V referenci)
     voltage = raw * 3.3 / 65535
-    # Vzorec pro teplotní senzor v RP2350:
-    # Teplota = 27 - (voltage - 0.706) / 0.001721
-    temperature = 27 - (voltage - 0.706) / 0.001721
-    return round(temperature, 1) # Zaokrouhlíme na 1 desetinné místo
+    temperature_c = 27 - (voltage - 0.706) / 0.001721
+    
+    if USER_UNITS == "F":
+        # Přepočet z Celsia na Fahrenheit: (C * 9/5) + 32
+        temperature_f = (temperature_c * 9 / 5) + 32
+        return round(temperature_f, 1)
+    else:
+        return round(temperature_c, 1)
 
 # === SOFTWAROVÉ KRESLENÍ NA ŠÍŘKU ===
 WIDTH_LANDSCAPE = 256
@@ -159,65 +203,83 @@ draw_buf = bytearray(WIDTH_LANDSCAPE * HEIGHT_LANDSCAPE // 8)
 fb_landscape = framebuf.FrameBuffer(draw_buf, WIDTH_LANDSCAPE, HEIGHT_LANDSCAPE, framebuf.MONO_HLSB)
 fb_landscape.fill(1) # Vyplnit bílou
 
-# --- UPRAVENÁ FUNKCE PRO TEXT 2x VĚTŠÍ (S VOLBOU BARVY) ---
+# --- UPRAVENÁ FUNKCE PRO ZVĚTŠENÝ TEXT S MENŠÍMI MEZERAMI ---
 def text_large(text, start_x, start_y, color=0):
-    temp_w = len(text) * 8
-    temp_h = 8
-    temp_buf = bytearray(temp_w * temp_h // 8)
-    temp_fb = framebuf.FrameBuffer(temp_buf, temp_w, temp_h, framebuf.MONO_HLSB)
+    current_x = start_x
     
-    # Pokud chceme kreslit BÍLÝ velký text (color=1), musíme mini buffer 
-    # nejdříve vyplnit ČERNĚ (0). Pokud chceme ČERNÝ text, vyplníme ho BÍLĚ (1).
-    if color == 1:
-        temp_fb.fill(0)
-        temp_fb.text(text, 0, 0, 1) # Píšeme bíle do černého okna
-    else:
-        temp_fb.fill(1)
-        temp_fb.text(text, 0, 0, 0) # Píšeme černě do bílého okna
+    # Pomocný mini buffer pro JEDNO písmeno (8x8 pixelů)
+    char_buf = bytearray(8 * 8 // 8)
+    char_fb = framebuf.FrameBuffer(char_buf, 8, 8, framebuf.MONO_HLSB)
     
-    # Překreslení do hlavního bufferu
-    for x in range(temp_w):
-        for y in range(temp_h):
-            # Pokud se pixel v mini bufferu shoduje s barvou textu, vykreslíme ho
-            if temp_fb.pixel(x, y) == color:
-                target_x = start_x + (x * 2)
-                target_y = start_y + (y * 2)
-                
-                # Vykreslíme čtvereček 2x2 zvolenou barvou
-                fb_landscape.pixel(target_x, target_y, color)
-                fb_landscape.pixel(target_x + 1, target_y, color)
-                fb_landscape.pixel(target_x, target_y + 1, color)
-                fb_landscape.pixel(target_x + 1, target_y + 1, color)
+    # Projdeme text znak po znaku
+    for char in text:
+        # Vyčistíme mini buffer opačnou barvou, než jakou chceme kreslit
+        if color == 1:
+            char_fb.fill(0)
+            char_fb.text(char, 0, 0, 1)
+        else:
+            char_fb.fill(1)
+            char_fb.text(char, 0, 0, 0)
+            
+        # Vykreslíme písmeno s $2\times$ zvětšením do hlavního bufferu
+        for x in range(8):
+            for y in range(8):
+                if char_fb.pixel(x, y) == color:
+                    target_x = current_x + (x * 2)
+                    target_y = start_y + (y * 2)
+                    
+                    fb_landscape.pixel(target_x, target_y, color)
+                    fb_landscape.pixel(target_x + 1, target_y, color)
+                    fb_landscape.pixel(target_x, target_y + 1, color)
+                    fb_landscape.pixel(target_x + 1, target_y + 1, color)
+        
+        # --- TRIK PRO ZMENŠENÍ MEZERY ---
+        # Pokud je znak obyčejná mezera, posuneme se o 8 pixelů.
+        # Pro normální písmena se posuneme jen o 11 pixelů (původně to bylo 16!).
+        # Tím písmena natlačíme blíž k sobě a text bude vypadat kompaktně.
+        if char == " ":
+            current_x += 8
+        else:
+            current_x += 16  # Změnou tohoto čísla (10-12) můžeš ladit šířku mezer
 
-# 1. Tlustý rámeček (3 pixely do sebe)
-fb_landscape.rect(0, 0, 250, 120, 0)
-fb_landscape.rect(1, 1, 248, 118, 0)
-fb_landscape.rect(2, 2, 246, 116, 0)
+# Hlavní kreslící buffer vyplníme barvou pozadí
+fb_landscape.fill(COLOR_BG)
 
-# --- INVERZNÍ HORNÍ LIŠTA (Bílý text na černém pozadí) ---
-# Vykreslíme plný černý obdélník podél horního okraje (uvnitř rámečku)
-# Souřadnice: X=3, Y=3, šířka=244, výška=16, barva=0 (černá)
-fb_landscape.fill_rect(3, 3, 244, 16, 0)
+# 1. Tlustý rámeček (kreslíme barvou popředí)
+fb_landscape.rect(0, 0, 250, 121, COLOR_FG)
+fb_landscape.rect(1, 1, 248, 119, COLOR_FG)
+fb_landscape.rect(2, 2, 246, 117, COLOR_FG)
 
-# Napíšeme text BÍLOU barvou (1) do tohoto černého obdélníku
-fb_landscape.text("PicoAir Stanice", 15, 6, 1)
-fb_landscape.text("V 1.0", 200, 6, 1)
+# --- INVERZNÍ HORNÍ LIŠTA ---
+fb_landscape.fill_rect(3, 3, 244, 16, COLOR_FG)
+fb_landscape.text("PicoAir Stanice", 15, 6, COLOR_BG)
+fb_landscape.text("V 1.0", 200, 6, COLOR_BG)
 
-# 2. Vykreslení hodnot velkým písmem (posunuto kousek dolů, aby to nebylo nalepené na liště)
+# 2. Vykreslení hodnot velkým písmem z .env
 cpu_temperature = get_cpu_temp()
-temp_string = "{}C".format(cpu_temperature)
+temp_value_str = "{}".format(cpu_temperature)
+temp_unit_str = " {}".format(USER_UNITS)
 
-text_large("Teplota:", 15, 27, 0)
-text_large(temp_string, 145, 27)
+# TEPLOTA (Text se načte z .env, např. "Teplota:")
+text_large(TXT_TEMP, 15, 27, COLOR_FG)
+text_large(temp_value_str, 145, 27, COLOR_FG)
 
-text_large("Vlhkost:", 15, 50, 0)
-text_large("--%", 145, 50) 
+# Přepočet pozice kroužku (zůstává stejný)
+degree_x = 145 + (len(temp_value_str) * 16)
+fb_landscape.rect(degree_x + 2, 27, 4, 4, COLOR_FG)
+text_large(temp_unit_str, degree_x + 4, 27, COLOR_FG)
 
-text_large("PPM:", 15, 73, 0)
-text_large("----", 145, 73)
+# VLHKOST
+text_large(TXT_HUMI, 15, 50, COLOR_FG)
+text_large("-- %", 145, 50, COLOR_FG) 
 
-text_large("Cas:", 15, 94, 0)
-text_large("--:--", 145, 94)
+# PPM
+text_large(TXT_PPM, 15, 73, COLOR_FG)
+text_large("----", 145, 73, COLOR_FG)
+
+# ČAS
+text_large(TXT_TIME, 15, 94, COLOR_FG)
+text_large("--:--", 145, 94, COLOR_FG)
 
 # === PŮVODNÍ ROTAČNÍ SMYČKA (NEMĚNIT) ===
 DISP_WIDTH = 128
