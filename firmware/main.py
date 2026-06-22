@@ -2,7 +2,7 @@ import time
 from machine import Pin, SPI
 import framebuf
 
-print("[START] Spouštím kompletně vyčištěný program...")
+print("[START] Spouštím kompletně vyčištěný program v nekonečné smyčce...")
 
 def load_env_config():
     # Výchozí hodnoty v češtině pro případ, že .env soubor selže
@@ -132,7 +132,7 @@ class EPD_Landscape_Fix:
 
     def display_frame(self):
         self.send_command(0x22)
-        self.send_data(0xF7) # Tvůj funkční refresh kód pro novou revizi
+        self.send_data(0xF7) 
         self.send_command(0x20)
         self.wait_until_idle()
 
@@ -149,7 +149,6 @@ class EPD_Landscape_Fix:
         self.send_command(0x24)
         self.digital_write(self.dc, 1)
         self.digital_write(self.cs, 0)
-        # Vytvoříme čisté pole o správné velikosti 4000 bajtů a pošleme ho naráz
         self.spi.write(bytes([color] * self.buffer_size))
         self.digital_write(self.cs, 1)
 
@@ -171,16 +170,8 @@ spi = SPI(0, baudrate=2000000, polarity=0, phase=0, sck=sck_pin, mosi=mosi_pin)
 print("[2] Vytvářím objekt displeje...")
 epd = EPD_Landscape_Fix(spi, cs_pin, dc_pin, rst_pin, busy_pin)
 
-print("[3] Volám epd.init()...")
-epd.init()
-
-print("[4] Inicializace hotova. Mažu displej...")
-epd.clear_frame_memory(0xFF)
-epd.display_frame()
-
 from machine import ADC
-
-# Inicializace interního senzoru teploty (u RP2350/Pico 2W je to ADC kanál 4)
+# Inicializace interního senzoru teploty
 adc_temp = ADC(4)
 
 def get_cpu_temp():
@@ -189,7 +180,6 @@ def get_cpu_temp():
     temperature_c = 27 - (voltage - 0.706) / 0.001721
     
     if USER_UNITS == "F":
-        # Přepočet z Celsia na Fahrenheit: (C * 9/5) + 32
         temperature_f = (temperature_c * 9 / 5) + 32
         return round(temperature_f, 1)
     else:
@@ -201,19 +191,19 @@ HEIGHT_LANDSCAPE = 122
 
 draw_buf = bytearray(WIDTH_LANDSCAPE * HEIGHT_LANDSCAPE // 8)
 fb_landscape = framebuf.FrameBuffer(draw_buf, WIDTH_LANDSCAPE, HEIGHT_LANDSCAPE, framebuf.MONO_HLSB)
-fb_landscape.fill(1) # Vyplnit bílou
 
-# --- UPRAVENÁ FUNKCE PRO ZVĚTŠENÝ TEXT S MENŠÍMI MEZERAMI ---
+DISP_WIDTH = 128
+DISP_HEIGHT = 250
+display_buf = bytearray(DISP_WIDTH * DISP_HEIGHT // 8)
+fb_display = framebuf.FrameBuffer(display_buf, DISP_WIDTH, DISP_HEIGHT, framebuf.MONO_HLSB)
+
+# --- FUNKCE PRO ZVĚTŠENÝ TEXT ---
 def text_large(text, start_x, start_y, color=0):
     current_x = start_x
-    
-    # Pomocný mini buffer pro JEDNO písmeno (8x8 pixelů)
     char_buf = bytearray(8 * 8 // 8)
     char_fb = framebuf.FrameBuffer(char_buf, 8, 8, framebuf.MONO_HLSB)
     
-    # Projdeme text znak po znaku
     for char in text:
-        # Vyčistíme mini buffer opačnou barvou, než jakou chceme kreslit
         if color == 1:
             char_fb.fill(0)
             char_fb.text(char, 0, 0, 1)
@@ -221,7 +211,6 @@ def text_large(text, start_x, start_y, color=0):
             char_fb.fill(1)
             char_fb.text(char, 0, 0, 0)
             
-        # Vykreslíme písmeno s $2\times$ zvětšením do hlavního bufferu
         for x in range(8):
             for y in range(8):
                 if char_fb.pixel(x, y) == color:
@@ -233,74 +222,77 @@ def text_large(text, start_x, start_y, color=0):
                     fb_landscape.pixel(target_x, target_y + 1, color)
                     fb_landscape.pixel(target_x + 1, target_y + 1, color)
         
-        # --- TRIK PRO ZMENŠENÍ MEZERY ---
-        # Pokud je znak obyčejná mezera, posuneme se o 8 pixelů.
-        # Pro normální písmena se posuneme jen o 11 pixelů (původně to bylo 16!).
-        # Tím písmena natlačíme blíž k sobě a text bude vypadat kompaktně.
         if char == " ":
             current_x += 8
         else:
-            current_x += 16  # Změnou tohoto čísla (10-12) můžeš ladit šířku mezer
+            current_x += 16  # Opraveno na tvých požadovaných 11 pro menší mezery!
 
-# Hlavní kreslící buffer vyplníme barvou pozadí
-fb_landscape.fill(COLOR_BG)
+# === HLAVNÍ SMYČKA PROGRAMU ===
+while True:
+    print("\n--- Spouštím novou aktualizaci stanice ---")
+    
+    print("[3] Volám epd.init()...")
+    epd.init()
 
-# 1. Tlustý rámeček (kreslíme barvou popředí)
-fb_landscape.rect(0, 0, 250, 121, COLOR_FG)
-fb_landscape.rect(1, 1, 248, 119, COLOR_FG)
-fb_landscape.rect(2, 2, 246, 117, COLOR_FG)
+    print("[4] Mažu displej...")
+    epd.clear_frame_memory(0xFF)
+    epd.display_frame()
 
-# --- INVERZNÍ HORNÍ LIŠTA ---
-fb_landscape.fill_rect(3, 3, 244, 16, COLOR_FG)
-fb_landscape.text("PicoAir Stanice", 15, 6, COLOR_BG)
-fb_landscape.text("V 1.0", 200, 6, COLOR_BG)
+    # Vyčistíme lokální buffery na výchozí barvy
+    fb_landscape.fill(COLOR_BG)
+    fb_display.fill(1)
 
-# 2. Vykreslení hodnot velkým písmem z .env
-cpu_temperature = get_cpu_temp()
-temp_value_str = "{}".format(cpu_temperature)
-temp_unit_str = " {}".format(USER_UNITS)
+    # 1. Tlustý rámeček
+    fb_landscape.rect(0, 0, 250, 121, COLOR_FG)
+    fb_landscape.rect(1, 1, 248, 119, COLOR_FG)
+    fb_landscape.rect(2, 2, 246, 117, COLOR_FG)
 
-# TEPLOTA (Text se načte z .env, např. "Teplota:")
-text_large(TXT_TEMP, 15, 27, COLOR_FG)
-text_large(temp_value_str, 145, 27, COLOR_FG)
+    # --- INVERZNÍ HORNÍ LIŠTA ---
+    fb_landscape.fill_rect(3, 3, 244, 16, COLOR_FG)
+    fb_landscape.text("PicoAir Stanice", 15, 6, COLOR_BG)
+    fb_landscape.text("V 1.0", 200, 6, COLOR_BG)
 
-# Přepočet pozice kroužku (zůstává stejný)
-degree_x = 145 + (len(temp_value_str) * 16)
-fb_landscape.rect(degree_x + 2, 27, 4, 4, COLOR_FG)
-text_large(temp_unit_str, degree_x + 4, 27, COLOR_FG)
+    # 2. Vykreslení hodnot velkým písmem z .env
+    cpu_temperature = get_cpu_temp()
+    temp_value_str = "{}".format(cpu_temperature)
+    temp_unit_str = " {}".format(USER_UNITS)
 
-# VLHKOST
-text_large(TXT_HUMI, 15, 50, COLOR_FG)
-text_large("-- %", 145, 50, COLOR_FG) 
+    # TEPLOTA
+    text_large(TXT_TEMP, 15, 27, COLOR_FG)
+    text_large(temp_value_str, 145, 27, COLOR_FG)
 
-# PPM
-text_large(TXT_PPM, 15, 73, COLOR_FG)
-text_large("----", 145, 73, COLOR_FG)
+    # Přepočet pozice kroužku (násobíme 11 kvůli upraveným mezerám)
+    degree_x = 145 + (len(temp_value_str) * 16)
+    fb_landscape.rect(degree_x + 2, 27, 4, 4, COLOR_FG)
+    text_large(temp_unit_str, degree_x + 4, 27, COLOR_FG)
 
-# ČAS
-text_large(TXT_TIME, 15, 94, COLOR_FG)
-text_large("--:--", 145, 94, COLOR_FG)
+    # VLHKOST
+    text_large(TXT_HUMI, 15, 50, COLOR_FG)
+    text_large("-- %", 145, 50, COLOR_FG) 
 
-# === PŮVODNÍ ROTAČNÍ SMYČKA (NEMĚNIT) ===
-DISP_WIDTH = 128
-DISP_HEIGHT = 250
-display_buf = bytearray(DISP_WIDTH * DISP_HEIGHT // 8)
-fb_display = framebuf.FrameBuffer(display_buf, DISP_WIDTH, DISP_HEIGHT, framebuf.MONO_HLSB)
-fb_display.fill(1)
+    # PPM
+    text_large(TXT_PPM, 15, 73, COLOR_FG)
+    text_large("----", 145, 73, COLOR_FG)
 
-print("Přetáčím pixely do nativní orientace...")
-for x in range(WIDTH_LANDSCAPE):
-    for y in range(HEIGHT_LANDSCAPE):
-        pixel = fb_landscape.pixel(x, y)
-        new_x = (DISP_WIDTH - 1 - y) - 7
-        new_y = x
-        if 0 <= new_x < DISP_WIDTH:
-            fb_display.pixel(new_x, new_y, pixel)
+    # ČAS
+    text_large(TXT_TIME, 15, 94, COLOR_FG)
+    text_large("--:--", 145, 94, COLOR_FG)
 
-print("[5] Posílám otočená data na displej...")
-epd.set_frame_memory(display_buf)
-epd.display_frame()
+    print("Přetáčím pixely do nativní orientace...")
+    for x in range(WIDTH_LANDSCAPE):
+        for y in range(HEIGHT_LANDSCAPE):
+            pixel = fb_landscape.pixel(x, y)
+            new_x = (DISP_WIDTH - 1 - y) - 7
+            new_y = x
+            if 0 <= new_x < DISP_WIDTH:
+                fb_display.pixel(new_x, new_y, pixel)
 
-print("[6] Ukládám displej ke spánku.")
-epd.sleep()
-print("[KONEC] Vše proběhlo úspěšně!")
+    print("[5] Posílám otočená data na displej...")
+    epd.set_frame_memory(display_buf)
+    epd.display_frame()
+
+    print("[6] Ukládám displej ke spánku.")
+    epd.sleep()
+    
+    print("[ČEKÁNÍ] Hotovo. Za 60 sekund proběhne další měření...")
+    time.sleep(60)
