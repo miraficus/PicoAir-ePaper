@@ -9,6 +9,7 @@ def load_env_config():
     config = {
         "DARK_MODE": "0",
         "UNITS": "C",
+        "REFRESH_RATE": "60",
         "TEXT_TEMPERATURE": "Teplota:",
         "TEXT_HUMIDITY": "Vlhkost:",
         "TEXT_PPM": "PPM:",
@@ -45,6 +46,16 @@ TXT_TEMP = env["TEXT_TEMPERATURE"] + ":" if not env["TEXT_TEMPERATURE"].endswith
 TXT_HUMI = env["TEXT_HUMIDITY"] + ":" if not env["TEXT_HUMIDITY"].endswith(":") else env["TEXT_HUMIDITY"]
 TXT_PPM  = env["TEXT_PPM"] + ":" if not env["TEXT_PPM"].endswith(":") else env["TEXT_PPM"]
 TXT_TIME = env["TEXT_TIME"] + ":" if not env["TEXT_TIME"].endswith(":") else env["TEXT_TIME"]
+
+# === NAČTENÍ A POJIŠTĚNÍ REFRESH_RATE ===
+try:
+    REFRESH_RATE = int(env["REFRESH_RATE"])
+except (KeyError, ValueError):
+    REFRESH_RATE = 60  # Pokud hodnota v .env chybí nebo je špatně napsaná
+
+# Bezpečnostní pojistka: Minimum je 20 sekund
+if REFRESH_RATE < 20:
+    REFRESH_RATE = 20
 
 class EPD_Landscape_Fix:
     def __init__(self, spi, cs, dc, rst, busy):
@@ -294,5 +305,5 @@ while True:
     print("[6] Ukládám displej ke spánku.")
     epd.sleep()
     
-    print("[ČEKÁNÍ] Hotovo. Za 60 sekund proběhne další měření...")
-    time.sleep(60)
+    print("[ČEKÁNÍ] Hotovo. Za {} sekund proběhne další měření...".format(REFRESH_RATE))
+    time.sleep(REFRESH_RATE)
