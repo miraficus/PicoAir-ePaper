@@ -7,6 +7,84 @@ import struct
 
 print("[START] Spouštím kompletně vyčištěný program v nekonečné smyčce...")
 
+class MojeMQTT:
+    def __init__(self, client_id, server, port=1883):
+        self.client_id = client_id
+        self.server = server
+        self.port = port
+        self.sock = None
+
+    def connect(self):
+        # 1. Otevřeme čistý TCP socket na Dell
+        self.sock = socket.socket()
+        addr = socket.getaddrinfo(self.server, self.port)[0][-1]
+        self.sock.connect(addr)
+        
+        # 2. NATVRDO SESTAVENÝ VALIDNÍ MQTT v3.1.1 CONNECT PAKET
+        # Žádné dynamické struct.pack, čisté bajty, které Mosquitto vyžaduje.
+        id_bytes = self.client_id.encode('utf-8')
+        id_len = len(id_bytes)
+        
+        # Variabilní hlavička pro MQTT 3.1.1 (Protokol: MQTT, Verze: 4, Clean Session, Keepalive 60s)
+        var_header = b"\x00\x04MQTT\x04\x02\x00\x3c"
+        
+        # Payload (Délka ID + samotné ID)
+        payload = bytes([id_len >> 8, id_len & 0xFF]) + id_bytes
+        
+        # Celková délka balíčku
+        remaining_len = len(var_header) + len(payload)
+        
+        # Fixní hlavička (0x10 = CONNECT)
+        packet = b"\x10" + bytes([remaining_len]) + var_header + payload
+        
+        # Odešleme balíček do sítě
+        self.sock.write(packet)
+        
+        # Přečteme odpověď od brokera (CONNACK má vždy 4 bajty)
+        res = self.sock.read(4)
+        if not res or res[0] != 0x20 or res[3] != 0:
+            raise Exception("Broker odmítl spojení (Kód: {})".format(res[3] if res else "Žádná data"))
+
+    def publish(self, topic, msg):
+        topic_bytes = topic.encode('utf-8')
+        msg_bytes = msg.encode('utf-8')
+        
+        # Payload pro PUBLISH (Délka tématu + téma + zpráva)
+        t_len = len(topic_bytes)
+        payload = bytes([t_len >> 8, t_len & 0xFF]) + topic_bytes + msg_bytes
+        
+        # Fixní hlavička (0x30 = PUBLISH)
+        packet = b"\x30" + bytes([len(payload)]) + payload
+        self.sock.write(packet)
+
+    def disconnect(self):
+        try:
+            self.sock.write(b"\xe0\x00") # 0xE0 = DISCONNECT
+        except:
+            pass
+        self.sock.close()
+
+    def publish(self, topic, msg, retain=False, qos=0):
+        if isinstance(topic, str):
+            topic = topic.encode()
+        if isinstance(msg, str):
+            msg = msg.encode()
+        pkt = bytearray(b"\x30\0")
+        if retain:
+            pkt[0] |= 1
+        if qos:
+            pkt[0] |= qos << 1
+        pkt.extend(struct.pack("!H", len(topic)))
+        pkt.extend(topic)
+        pkt.extend(msg)
+        pkt[1] = len(pkt) - 2
+        self.sock.write(pkt)
+
+    def disconnect(self):
+        self.sock.write(b"\xe0\0")
+        self.sock.close()
+
+
 def load_env_config():
     config = {
         "DARK_MODE": "0",
@@ -19,7 +97,11 @@ def load_env_config():
         "WIFI_SSID": "",
         "WIFI_PASSWORD": "",
         "NTP_ADDRESS": "pool.ntp.org",
-        "UTC_TIMEZONE": "1"
+        "UTC_TIMEZONE": "1",
+        "MQTT_ENABLED": "0",
+        "MQTT_BROKER": "",
+        "MQTT_PORT": "1883",
+        "MQTT_LOCATION": "pokoj"
     }
     try:
         with open(".env", "r") as f:
@@ -61,9 +143,15 @@ except (KeyError, ValueError):
 if REFRESH_RATE < 20:
     REFRESH_RATE = 20
 
+# Načtení MQTT konfigurace
+MQTT_ENABLED = int(env.get("MQTT_ENABLED", "0"))
+MQTT_BROKER = env.get("MQTT_BROKER", "")
+MQTT_PORT = int(env.get("MQTT_PORT", "1883"))
+MQTT_LOCATION = env.get("MQTT_LOCATION", "unknown")
+
 # Proměnné pro uchování synchronizovaného času
-base_timestamp = 0  # Čas v sekundách od 1. 1. 1970
-base_ticks = 0      # Tiky procesoru v momentu synchronizace
+base_timestamp = 0
+base_ticks = 0
 time_synchronized = False
 
 def connect_wifi_and_sync_time():
@@ -76,12 +164,22 @@ def connect_wifi_and_sync_time():
         print("[WIFI] V .env chybí název Wi-Fi, spouštím bez internetu.")
         return
 
+    # 1. GENERÁLNÍ PAUZA PRO STABILIZACI PO ZAPNUTÍ (Klíčové pro Pico 2 W)
+    print("[WIFI] Čekám na stabilizaci napájení...")
+    time.sleep(2)
+
     wlan = network.WLAN(network.STA_IF)
+    
+    # 2. TVRDÝ RESET S DELŠÍMI PAUZAMI
+    print("[WIFI] Resetuji Wi-Fi modul...")
+    wlan.active(False)
+    time.sleep(1)
     wlan.active(True)
+    time.sleep(1)  # Necháme firmware čipu plně nastartovat
+    
     print("[WIFI] Připojuji se k: {}".format(ssid))
     wlan.connect(ssid, password)
     
-    # Čekáme max 10 sekund na připojení
     max_wait = 20
     while max_wait > 0 and not wlan.isconnected():
         max_wait -= 1
@@ -93,7 +191,6 @@ def connect_wifi_and_sync_time():
         print("[NTP] Stahuji čas z: {}".format(ntp_server))
         
         try:
-            # Surový NTP request (Port 123)
             NTP_QUERY = bytearray(48)
             NTP_QUERY[0] = 0x1B
             addr = socket.getaddrinfo(ntp_server, 123)[0][-1]
@@ -103,40 +200,31 @@ def connect_wifi_and_sync_time():
             msg, address = s.recvfrom(48)
             s.close()
             
-            # Formát NTP epoch (od r. 1900) převádíme na Unix epoch (od r. 1970)
             val = struct.unpack("!I", msg[40:44])[0]
             NTP_DELTA = 2208988800
             timestamp_utc = val - NTP_DELTA
             
-            # 1. Zjistíme základní časové pásmo z .env (např. 1 pro ČR/Sk)
             try:
                 base_tz = int(env.get("UTC_TIMEZONE", 1))
             except ValueError:
                 base_tz = 1
 
-            # 2. Převedeme UTC čas na strukturu data, abychom zjistili měsíc a den
             tm = time.localtime(timestamp_utc)
             year, month, day, hour = tm[0], tm[1], tm[2], tm[3]
             
-            # 3. AUTOMATICKÝ VÝPOČET LETNÍHO ČASU (DST)
-            # Zjistíme dny v týdnu pro poslední neděle v březnu a říjnu
-            # Formula: (den_v_tydnu pro 31. den) -> posun zpět na neděli
             mar_sunday = 31 - (time.localtime(time.mktime((year, 3, 31, 1, 0, 0, 0, 0)))[6])
             oct_sunday = 31 - (time.localtime(time.mktime((year, 10, 31, 1, 0, 0, 0, 0)))[6])
             
             is_dst = False
             if 3 < month < 10:
-                is_dst = True  # Duben až Září je vždy letní čas
+                is_dst = True
             elif month == 3:
-                # V březnu po poslední neděli od 1:00 UTC
                 if day > mar_sunday or (day == mar_sunday and hour >= 1):
                     is_dst = True
             elif month == 10:
-                # V říjnu před poslední nedělí do 1:00 UTC
                 if day < oct_sunday or (day == oct_sunday and hour < 1):
                     is_dst = True
 
-            # 4. Výsledný posun (Základ + 1 hodina pokud je letní čas)
             final_tz = base_tz + (1 if is_dst else 0)
             TIMEZONE_OFFSET = final_tz * 3600
             
@@ -146,25 +234,19 @@ def connect_wifi_and_sync_time():
             
             print("[NTP] Synchronizováno. Datum: {}.{}.{}, Automatický DST: {}".format(day, month, year, "ANO (Letní)" if is_dst else "NE (Zimní)"))
         except Exception as e:
-            print("[NTP] Chyba synchronizace času:", e)
-            
-        # Odpojíme Wi-Fi, ať šetříme energii, když už ji nepotřebujeme
-        wlan.active(False)
+            print("[NTP] Chyba synchronizace času:", e)      
+
     else:
         print("\n[WIFI] Nepodařilo se připojit k Wi-Fi.")
+
+    return wlan
 
 def get_current_time_str():
     if not time_synchronized:
         return "--:--"
-        
-    # Spočítáme, kolik sekund uběhlo od synchronizace
     elapsed_ms = time.ticks_diff(time.ticks_ms(), base_ticks)
     current_timestamp = base_timestamp + (elapsed_ms // 1000)
-    
-    # Převod timestampu na čitelný čas (rok, měsíc, den, hodina, minuta, sekunda...)
     local_time = time.localtime(current_timestamp)
-    
-    # Formátujeme jako HH:MM (přidáme nuly, pokud je číslo menší než 10)
     hours = "{:02d}".format(local_time[3])
     minutes = "{:02d}".format(local_time[4])
     return "{}:{}".format(hours, minutes)
@@ -285,9 +367,6 @@ spi = SPI(0, baudrate=2000000, polarity=0, phase=0, sck=sck_pin, mosi=mosi_pin)
 print("[2] Vytvářím objekt displeje...")
 epd = EPD_Landscape_Fix(spi, cs_pin, dc_pin, rst_pin, busy_pin)
 
-# --- SPOUŠTÍME WI-FI A SYNCHRONIZACI ČASU (Mimo smyčku) ---
-connect_wifi_and_sync_time()
-
 from machine import ADC
 adc_temp = ADC(4)
 
@@ -335,12 +414,13 @@ def text_large(text, start_x, start_y, color=0):
         if char == " ":
             current_x += 8
         else:
-            current_x += 14 # Opraveno zpět na úzké mezery 11
+            current_x += 14
 
 # === HLAVNÍ SMYČKA PROGRAMU ===
 while True:
     print("\n--- Spouštím novou aktualizaci stanice ---")
     
+    # 1. NEJDŘÍVE VYKRESLÍME DISPLEJ (Zatím bez Wi-Fi)
     print("[3] Volám epd.init()...")
     epd.init()
 
@@ -351,23 +431,20 @@ while True:
     fb_landscape.fill(COLOR_BG)
     fb_display.fill(1)
 
-    # 1. Tlustý rámeček
     fb_landscape.rect(0, 0, 250, 121, COLOR_FG)
     fb_landscape.rect(1, 1, 248, 119, COLOR_FG)
     fb_landscape.rect(2, 2, 246, 117, COLOR_FG)
 
-    # --- INVERZNÍ HORNÍ LIŠTA ---
+    # Čas bude z minulé smyčky, nebo se ukáže --:-- pokud je to úplně první start
     current_time_str = get_current_time_str()
     fb_landscape.fill_rect(3, 3, 244, 16, COLOR_FG)
     fb_landscape.text("PicoAir Stanice", 15, 6, COLOR_BG)
     fb_landscape.text(current_time_str, 200, 6, COLOR_BG)
 
-    # 2. Vykreslení hodnot velkým písmem
     cpu_temperature = get_cpu_temp()
     temp_value_str = "{}".format(cpu_temperature)
     temp_unit_str = " {}".format(USER_UNITS)
 
-    # TEPLOTA
     text_large(TXT_TEMP, 15, 27, COLOR_FG)
     text_large(temp_value_str, 135, 27, COLOR_FG)
 
@@ -375,16 +452,12 @@ while True:
     fb_landscape.rect(degree_x + 2, 27, 4, 4, COLOR_FG)
     text_large(temp_unit_str, degree_x + 4, 27, COLOR_FG)
 
-    # VLHKOST
     text_large(TXT_HUMI, 15, 50, COLOR_FG)
     text_large("-- %", 135, 50, COLOR_FG) 
 
-    # PPM
     text_large(TXT_PPM, 15, 73, COLOR_FG)
     text_large("----", 135, 73, COLOR_FG)
 
-    # TLAK
-    current_time_str = get_current_time_str()
     text_large(TXT_PRESSURE, 15, 94, COLOR_FG)
     text_large("---- hPa", 135, 94, COLOR_FG)    
 
@@ -403,6 +476,60 @@ while True:
 
     print("[6] Ukládám displej ke spánku.")
     epd.sleep()
+    
+    # 2. TEPRVE TEĎ, KDYŽ DISPLEJ SPÍ, ZAPNEME SÍŤ
+    # Spojí se s Wi-Fi a synchronizuje NTP čas
+    connect_wifi_and_sync_time()
+    
+    # 3. OKAMŽITĚ ODEŠLEME DATA PŘES MQTT (Wi-Fi je čerstvě připojená)
+    if MQTT_ENABLED == 1 and MQTT_BROKER:
+        wlan = network.WLAN(network.STA_IF)
+        if wlan and wlan.isconnected():
+            print("[INFLUX] Odesílám data přímo do databáze...")
+            try:
+                # InfluxDB v1 naslouchá na portu 8086
+                url_ip = MQTT_BROKER
+                port = 8086
+                
+                # Sestavení zprávy v protokolu Influx Line Protocol
+                # Struktura: mereni,tag=hodnota pole=hodnota
+                payload = "pocasi,lokace={} teplota={:.1f}\n".format(MQTT_LOCATION, cpu_temperature)
+                
+                # Vytvoříme klasické HTTP POST spojení
+                s = socket.socket()
+                addr = socket.getaddrinfo(url_ip, port)[0][-1]
+                s.connect(addr)
+                
+                # HTTP Hlavička pro InfluxDB zápis do databáze 'meteostanice'
+                http_req = (
+                    "POST /write?db=meteostanice HTTP/1.1\r\n"
+                    "Host: {}:{}\r\n"
+                    "Content-Length: {}\r\n"
+                    "Content-Type: text/plain\r\n"
+                    "\r\n"
+                    "{}"
+                ).format(url_ip, port, len(payload), payload)
+                
+                s.write(http_req.encode('utf-8'))
+                
+                # Přečteme odpověď (Influx při úspěchu vrací HTTP/1.1 204 No Content)
+                response = s.read(64).decode('utf-8')
+                s.close()
+                
+                if "204" in response:
+                    print("[INFLUX] Data úspěšně zapsána do InfluxDB!")
+                else:
+                    print("[INFLUX] Server odpověděl jinak:", response.split("\r\n")[0])
+                    
+            except Exception as e:
+                print("[INFLUX] Selhalo odeslání do InfluxDB:", e)
+        else:
+            print("[INFLUX] Wi-Fi není připojena, data neodeslána.")
+            
+    # 4. KOMPLETNÍ VYPNUTÍ WI-FI PŘED SPÁNKEM
+    if wlan:
+        wlan.active(False)
+    print("[SYSTEM] Wi-Fi modul kompletně uspán.")
     
     print("[ČEKÁNÍ] Hotovo. Za {} sekund proběhne další měření...".format(REFRESH_RATE))
     time.sleep(REFRESH_RATE)
