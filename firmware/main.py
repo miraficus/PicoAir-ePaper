@@ -1,89 +1,11 @@
 import time
-from machine import Pin, SPI, ADC
+from machine import Pin, SPI, ADC, I2C
 import framebuf
 import network
 import socket
 import struct
 
 print("[START] Spouštím kompletně vyčištěný program v nekonečné smyčce...")
-
-class MojeMQTT:
-    def __init__(self, client_id, server, port=1883):
-        self.client_id = client_id
-        self.server = server
-        self.port = port
-        self.sock = None
-
-    def connect(self):
-        # 1. Otevřeme čistý TCP socket na Dell
-        self.sock = socket.socket()
-        addr = socket.getaddrinfo(self.server, self.port)[0][-1]
-        self.sock.connect(addr)
-        
-        # 2. NATVRDO SESTAVENÝ VALIDNÍ MQTT v3.1.1 CONNECT PAKET
-        # Žádné dynamické struct.pack, čisté bajty, které Mosquitto vyžaduje.
-        id_bytes = self.client_id.encode('utf-8')
-        id_len = len(id_bytes)
-        
-        # Variabilní hlavička pro MQTT 3.1.1 (Protokol: MQTT, Verze: 4, Clean Session, Keepalive 60s)
-        var_header = b"\x00\x04MQTT\x04\x02\x00\x3c"
-        
-        # Payload (Délka ID + samotné ID)
-        payload = bytes([id_len >> 8, id_len & 0xFF]) + id_bytes
-        
-        # Celková délka balíčku
-        remaining_len = len(var_header) + len(payload)
-        
-        # Fixní hlavička (0x10 = CONNECT)
-        packet = b"\x10" + bytes([remaining_len]) + var_header + payload
-        
-        # Odešleme balíček do sítě
-        self.sock.write(packet)
-        
-        # Přečteme odpověď od brokera (CONNACK má vždy 4 bajty)
-        res = self.sock.read(4)
-        if not res or res[0] != 0x20 or res[3] != 0:
-            raise Exception("Broker odmítl spojení (Kód: {})".format(res[3] if res else "Žádná data"))
-
-    def publish(self, topic, msg):
-        topic_bytes = topic.encode('utf-8')
-        msg_bytes = msg.encode('utf-8')
-        
-        # Payload pro PUBLISH (Délka tématu + téma + zpráva)
-        t_len = len(topic_bytes)
-        payload = bytes([t_len >> 8, t_len & 0xFF]) + topic_bytes + msg_bytes
-        
-        # Fixní hlavička (0x30 = PUBLISH)
-        packet = b"\x30" + bytes([len(payload)]) + payload
-        self.sock.write(packet)
-
-    def disconnect(self):
-        try:
-            self.sock.write(b"\xe0\x00") # 0xE0 = DISCONNECT
-        except:
-            pass
-        self.sock.close()
-
-    def publish(self, topic, msg, retain=False, qos=0):
-        if isinstance(topic, str):
-            topic = topic.encode()
-        if isinstance(msg, str):
-            msg = msg.encode()
-        pkt = bytearray(b"\x30\0")
-        if retain:
-            pkt[0] |= 1
-        if qos:
-            pkt[0] |= qos << 1
-        pkt.extend(struct.pack("!H", len(topic)))
-        pkt.extend(topic)
-        pkt.extend(msg)
-        pkt[1] = len(pkt) - 2
-        self.sock.write(pkt)
-
-    def disconnect(self):
-        self.sock.write(b"\xe0\0")
-        self.sock.close()
-
 
 def load_env_config():
     config = {
@@ -143,11 +65,73 @@ except (KeyError, ValueError):
 if REFRESH_RATE < 20:
     REFRESH_RATE = 20
 
-# Načtení MQTT konfigurace
+# Načtení síťové konfigurace
 MQTT_ENABLED = int(env.get("MQTT_ENABLED", "0"))
 MQTT_BROKER = env.get("MQTT_BROKER", "")
 MQTT_PORT = int(env.get("MQTT_PORT", "1883"))
 MQTT_LOCATION = env.get("MQTT_LOCATION", "unknown")
+
+
+# === AUTOMATICKÝ TEST A INICIALIZACE I2C PRO SCD41 ===
+SCD41_ADDR = 0x62
+i2c = None
+scd41_funkcni = False
+
+def scd41_send_command(cmd):
+    if not scd41_funkcni or i2c is None: return
+    buf = bytes([cmd >> 8, cmd & 0xFF])
+    i2c.writeto(SCD41_ADDR, buf)
+    time.sleep_ms(10)
+
+def init_i2c_and_scd41():
+    global i2c, scd41_funkcni
+    print("\n--- [TEST] Inicializace SCD41 na pinech GP18/GP19 ---")
+    
+    try:
+        # Inicializace na sběrnici I2C(1) s piny 18 (SDA) a 19 (SCL)
+        i2c = I2C(1, scl=Pin(19), sda=Pin(18), freq=100000)
+        
+        if SCD41_ADDR in i2c.scan():
+            scd41_funkcni = True
+            print("[SCD41] Senzor úspěšně nalezen a komunikuje!")
+            
+            # Zastavíme případné běžící měření z minula
+            scd41_send_command(0x3F86)
+            time.sleep_ms(500)
+            # Spustíme kontinuální periodické měření
+            scd41_send_command(0x21B1)
+            print("[SCD41] Měření úspěšně nastartováno.")
+            time.sleep(5)
+        else:
+            print("[⚠️ VAROVÁNÍ] Senzor na adrese 0x62 neodpověděl.")
+            scd41_funkcni = False
+            
+    except Exception as e:
+        print("[⚠️ CHYBA] Selhala inicializace I2C sběrnice:", e)
+        scd41_funkcni = False
+
+def read_scd41():
+    if not scd41_funkcni or i2c is None:
+        return None, None, None
+    co2, temp, humi = None, None, None
+    try:
+        scd41_send_command(0xEC05)
+        time.sleep_ms(50)
+        
+        # Čteme 9 bajtů (CO2 + CRC, Temp + CRC, Humi + CRC)
+        data = i2c.readfrom(SCD41_ADDR, 9)
+        
+        co2 = (data[0] << 8) | data[1]
+        
+        temp_word = (data[3] << 8) | data[4]
+        temp = -45.0 + 175.0 * temp_word / 65536.0
+        
+        humi_word = (data[6] << 8) | data[7]
+        humi = 100.0 * humi_word / 65536.0
+    except Exception as e:
+        print("[SCD41] Nepodařilo se přečíst data:", e)
+    return co2, temp, humi
+
 
 # Proměnné pro uchování synchronizovaného času
 base_timestamp = 0
@@ -162,20 +146,18 @@ def connect_wifi_and_sync_time():
     
     if not ssid:
         print("[WIFI] V .env chybí název Wi-Fi, spouštím bez internetu.")
-        return
+        return None
 
-    # 1. GENERÁLNÍ PAUZA PRO STABILIZACI PO ZAPNUTÍ (Klíčové pro Pico 2 W)
     print("[WIFI] Čekám na stabilizaci napájení...")
     time.sleep(2)
 
     wlan = network.WLAN(network.STA_IF)
     
-    # 2. TVRDÝ RESET S DELŠÍMI PAUZAMI
     print("[WIFI] Resetuji Wi-Fi modul...")
     wlan.active(False)
     time.sleep(1)
     wlan.active(True)
-    time.sleep(1)  # Necháme firmware čipu plně nastartovat
+    time.sleep(1) 
     
     print("[WIFI] Připojuji se k: {}".format(ssid))
     wlan.connect(ssid, password)
@@ -235,7 +217,6 @@ def connect_wifi_and_sync_time():
             print("[NTP] Synchronizováno. Datum: {}.{}.{}, Automatický DST: {}".format(day, month, year, "ANO (Letní)" if is_dst else "NE (Zimní)"))
         except Exception as e:
             print("[NTP] Chyba synchronizace času:", e)      
-
     else:
         print("\n[WIFI] Nepodařilo se připojit k Wi-Fi.")
 
@@ -367,7 +348,6 @@ spi = SPI(0, baudrate=2000000, polarity=0, phase=0, sck=sck_pin, mosi=mosi_pin)
 print("[2] Vytvářím objekt displeje...")
 epd = EPD_Landscape_Fix(spi, cs_pin, dc_pin, rst_pin, busy_pin)
 
-from machine import ADC
 adc_temp = ADC(4)
 
 def get_cpu_temp():
@@ -416,11 +396,29 @@ def text_large(text, start_x, start_y, color=0):
         else:
             current_x += 14
 
+# Spustíme automatický vyhledávací test senzoru
+init_i2c_and_scd41()
+
 # === HLAVNÍ SMYČKA PROGRAMU ===
 while True:
     print("\n--- Spouštím novou aktualizaci stanice ---")
     
-    # 1. NEJDŘÍVE VYKRESLÍME DISPLEJ (Zatím bez Wi-Fi)
+    # 1. VYČTEME DATA ZE SENZORU SCD41 (Pokud prošel testem)
+    co2, s_temp, s_humi = read_scd41()
+    
+    # Formátování textů pro e-ink (pokud čtení selže nebo senzor není, hodí se pomlčky)
+    if s_temp is not None:
+        if USER_UNITS == "F":
+            s_temp = (s_temp * 9 / 5) + 32
+        temp_value_str = "{:.1f}".format(s_temp)
+    else:
+        temp_value_str = "--.-"
+        
+    humi_value_str = "{:.0f} %".format(s_humi) if s_humi is not None else "-- %"
+    co2_value_str = "{:d}".format(co2) if co2 is not None else "----"
+    temp_unit_str = " {}".format(USER_UNITS)
+
+    # 2. VYKRESLÍME DATA NA DISPLEJ
     print("[3] Volám epd.init()...")
     epd.init()
 
@@ -435,16 +433,12 @@ while True:
     fb_landscape.rect(1, 1, 248, 119, COLOR_FG)
     fb_landscape.rect(2, 2, 246, 117, COLOR_FG)
 
-    # Čas bude z minulé smyčky, nebo se ukáže --:-- pokud je to úplně první start
     current_time_str = get_current_time_str()
     fb_landscape.fill_rect(3, 3, 244, 16, COLOR_FG)
     fb_landscape.text("PicoAir Stanice", 15, 6, COLOR_BG)
     fb_landscape.text(current_time_str, 200, 6, COLOR_BG)
 
-    cpu_temperature = get_cpu_temp()
-    temp_value_str = "{}".format(cpu_temperature)
-    temp_unit_str = " {}".format(USER_UNITS)
-
+    # Teplota ze senzoru
     text_large(TXT_TEMP, 15, 27, COLOR_FG)
     text_large(temp_value_str, 135, 27, COLOR_FG)
 
@@ -452,12 +446,15 @@ while True:
     fb_landscape.rect(degree_x + 2, 27, 4, 4, COLOR_FG)
     text_large(temp_unit_str, degree_x + 4, 27, COLOR_FG)
 
+    # Vlhkost ze senzoru
     text_large(TXT_HUMI, 15, 50, COLOR_FG)
-    text_large("-- %", 135, 50, COLOR_FG) 
+    text_large(humi_value_str, 135, 50, COLOR_FG) 
 
+    # CO2 ze senzoru
     text_large(TXT_PPM, 15, 73, COLOR_FG)
-    text_large("----", 135, 73, COLOR_FG)
+    text_large(co2_value_str, 135, 73, COLOR_FG)
 
+    # Tlak (SCD41 nemá, zůstávají pomlčky)
     text_large(TXT_PRESSURE, 15, 94, COLOR_FG)
     text_large("---- hPa", 135, 94, COLOR_FG)    
 
@@ -477,30 +474,25 @@ while True:
     print("[6] Ukládám displej ke spánku.")
     epd.sleep()
     
-    # 2. TEPRVE TEĎ, KDYŽ DISPLEJ SPÍ, ZAPNEME SÍŤ
-    # Spojí se s Wi-Fi a synchronizuje NTP čas
-    connect_wifi_and_sync_time()
+    # 3. ZAPNEME WI-FI SÍT PRO SYNC ČASU A INFLUX
+    wlan = connect_wifi_and_sync_time()
     
-    # 3. OKAMŽITĚ ODEŠLEME DATA PŘES MQTT (Wi-Fi je čerstvě připojená)
-    if MQTT_ENABLED == 1 and MQTT_BROKER:
-        wlan = network.WLAN(network.STA_IF)
+    # 4. ODESÍLÁNÍ DAT PŘÍMO DO INFLUXDB (Pouze pokud máme data ze senzoru)
+    if MQTT_ENABLED == 1 and MQTT_BROKER and scd41_funkcni and s_temp is not None:
         if wlan and wlan.isconnected():
             print("[INFLUX] Odesílám data přímo do databáze...")
             try:
-                # InfluxDB v1 naslouchá na portu 8086
                 url_ip = MQTT_BROKER
                 port = 8086
                 
-                # Sestavení zprávy v protokolu Influx Line Protocol
-                # Struktura: mereni,tag=hodnota pole=hodnota
-                payload = "pocasi,lokace={} teplota={:.1f}\n".format(MQTT_LOCATION, cpu_temperature)
+                payload = "pocasi,lokace={} teplota={:.2f},vlhkost={:.2f},co2={:d}\n".format(
+                    MQTT_LOCATION, s_temp, s_humi, co2
+                )
                 
-                # Vytvoříme klasické HTTP POST spojení
                 s = socket.socket()
                 addr = socket.getaddrinfo(url_ip, port)[0][-1]
                 s.connect(addr)
                 
-                # HTTP Hlavička pro InfluxDB zápis do databáze 'meteostanice'
                 http_req = (
                     "POST /write?db=meteostanice HTTP/1.1\r\n"
                     "Host: {}:{}\r\n"
@@ -511,13 +503,11 @@ while True:
                 ).format(url_ip, port, len(payload), payload)
                 
                 s.write(http_req.encode('utf-8'))
-                
-                # Přečteme odpověď (Influx při úspěchu vrací HTTP/1.1 204 No Content)
                 response = s.read(64).decode('utf-8')
                 s.close()
                 
                 if "204" in response:
-                    print("[INFLUX] Data úspěšně zapsána do InfluxDB!")
+                    print("[INFLUX] Všechna data úspěšně zapsána do InfluxDB!")
                 else:
                     print("[INFLUX] Server odpověděl jinak:", response.split("\r\n")[0])
                     
@@ -526,7 +516,7 @@ while True:
         else:
             print("[INFLUX] Wi-Fi není připojena, data neodeslána.")
             
-    # 4. KOMPLETNÍ VYPNUTÍ WI-FI PŘED SPÁNKEM
+    # 5. KOMPLETNÍ VYPNUTÍ WI-FI PŘED SPÁNKEM
     if wlan:
         wlan.active(False)
     print("[SYSTEM] Wi-Fi modul kompletně uspán.")
