@@ -415,7 +415,7 @@ while True:
         temp_value_str = "--.-"
         
     humi_value_str = "{:.0f} %".format(s_humi) if s_humi is not None else "-- %"
-    co2_value_str = "{:d}".format(co2) if co2 is not None else "----"
+    co2_value_str = "{:d} PPM".format(co2) if co2 is not None else "----"
     temp_unit_str = " {}".format(USER_UNITS)
 
     # 2. VYKRESLÍME DATA NA DISPLEJ
