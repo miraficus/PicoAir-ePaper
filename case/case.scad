@@ -46,24 +46,56 @@ module frontcase() {
     }
 }  
 
-
 module displayholds() {
-translate([69,4,7])
-color("lightgreen")
-chamferCube([4, 8, 1], [[1, 1, 0, 0], [0, 0, 0, 1], [0, 1, 1, 0]], 0.5);
+    translate([69,4,7])
+    color("lightgreen")
+    chamferCube([4, 8, 1], [[1, 0, 0, 0], [0, 0, 0, 1], [0, 1, 0, 0]], 0.5);
 
-translate([69,28,7])
-color("lightgreen")
-chamferCube([4, 8, 1], [[1, 1, 0, 0], [0, 0, 0, 1], [0, 1, 1, 0]], 0.5);
+    translate([69,28,7])
+    color("lightgreen")
+    chamferCube([4, 8, 1], [[0, 1, 0, 0], [0, 0, 0, 1], [0, 0, 1, 0]], 0.5);
 
-translate([1.5,14,7])
-color("lightgreen")
-chamferCube([4, 12, 1], [[1, 1, 0, 0], [0, 0, 0, 1], [0, 1, 1, 0]], 0.5);
+    translate([1.5,14,7])
+    color("lightgreen")
+    chamferCube([4, 12, 1], [[1, 1, 0, 0], [0, 0, 0, 1], [0, 1, 1, 0]], 0.5);
 }
+ 
+module magnethold() {
+    difference() {
+        translate([3,3,0])
+        color("red")
+        cylinder(d=6, h=11);
+        
+        translate([3,3,0])
+        color("pink")
+        cylinder(d=4, h=6); 
+    }
+}
+
+module magnetholds() {
+    magnethold();
+
+    translate([74,0,0])
+    magnethold();
+
+    translate([0,34,0])
+    magnethold();
     
+    translate([74,34,0])
+    magnethold();    
+    
+
+
+}
+
+
+
+
+
+ 
 frontcase();    
 displayholds();    
-
+magnetholds();
     
     
     
