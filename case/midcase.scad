@@ -17,11 +17,15 @@ module case() {
 
 module cutcase() {
     difference() {
-    case();
+        case();
+        
+        translate([1,1,0])
+        chamferCube([78, 38, 19], [[0, 0, 1, 1], [0, 1, 1, 0], [1, 1, 1, 1]], 0.5);
     
-    translate([1,1,0])
-    chamferCube([78, 38, 18], [[0, 0, 1, 1], [0, 1, 1, 0], [1, 1, 1, 1]], 0.5);
-    }
+        color("grey")
+        translate([58,5,18])
+        cube([17,30,3]); 
+    }   
 }  
  
 module magnethold() {
@@ -77,17 +81,70 @@ module caseholds() {
     translate([-39,58,-2])
     color("lightgreen")
     chamferCube([1, 12, 8], [[1, 1, 0, 0], [1, 0, 1, 1], [0, 0, 0, 0]], 0.5);
+}
 
- 
- 
+module caseholdsholes() {
+    difference() {
+        cutcase();
+        
+        translate([0,0,16])
+        color("blue")
+        caseholds();
+    }     
+}
+
+module pico() {
+    translate([1,9.5,15])
+    cube([51.2,21,1]);
+
+    translate([-1,16,15.5])
+    color("red")
+    chamferCube([8, 8, 3], [[1, 1, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], 1.5);
+
+    translate([1,15,16])
+    color("pink")
+    cube([6,10,3]);
+    
+    color("green")
+    translate([46.2,17.5,16])
+    cube([6,5,2]);
+
+    color("white")
+    translate([1,9.5,16])
+    cube([5,2,3]);
+
+    color("white")
+    translate([1,28.5,16])
+    cube([5,2,3]);
+    
+}
+
+module picoholder() {
+    color("lightblue")
+    translate([46.2,8.5,15])
+    cube([8,23,4]);
+
+    color("lightblue")
+    translate([0,8.5,15])
+    cube([5,23,4]);
+}
+
+difference() {
+    picoholder();
+    pico();
+}
+
+difference() {
+    caseholdsholes();
+    pico();
 }
 
 
 
-
-cutcase();        
+//picoholder();
+//pico();        
 magnetholds();
 caseholds();    
-    
+//caseholdsholes();     
     
     
