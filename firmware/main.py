@@ -74,8 +74,12 @@ MQTT_LOCATION = env.get("MQTT_LOCATION", "unknown")
 
 # === AUTOMATICKÝ TEST A INICIALIZACE I2C PRO SCD41 ===
 SCD41_ADDR = 0x62
+BMP180_ADDR = 0x77
 i2c = None
 scd41_funkcni = False
+bmp180_funkcni = False
+
+bmp_calib = {}
 
 def scd41_send_command(cmd):
     if not scd41_funkcni or i2c is None: return
@@ -83,32 +87,52 @@ def scd41_send_command(cmd):
     i2c.writeto(SCD41_ADDR, buf)
     time.sleep_ms(10)
 
-def init_i2c_and_scd41():
-    global i2c, scd41_funkcni
-    print("\n--- [TEST] Inicializace SCD41 na pinech GP18/GP19 ---")
+def init_i2c_scd41_bmp180():
+    global i2c, scd41_funkcni, bmp180_funkcni, bmp_calib
+    print("\n--- [TEST] Inicializace I2C senzorů na pinech GP18/GP19 ---")
     
     try:
-        # Inicializace na sběrnici I2C(1) s piny 18 (SDA) a 19 (SCL)
         i2c = I2C(1, scl=Pin(19), sda=Pin(18), freq=100000)
+        scan_results = i2c.scan()
         
-        if SCD41_ADDR in i2c.scan():
+        # Inicializace SCD41
+        if SCD41_ADDR in scan_results:
             scd41_funkcni = True
             print("[SCD41] Senzor úspěšně nalezen a komunikuje!")
-            
-            # Zastavíme případné běžící měření z minula
             scd41_send_command(0x3F86)
             time.sleep_ms(500)
-            # Spustíme kontinuální periodické měření
             scd41_send_command(0x21B1)
-            print("[SCD41] Měření úspěšně nastartováno.")
-            time.sleep(5)
+            print("[SCD41] Měření nastartováno.")
         else:
-            print("[⚠️ VAROVÁNÍ] Senzor na adrese 0x62 neodpověděl.")
+            print("[⚠️ VAROVÁNÍ] SCD41 neodpověděl.")
             scd41_funkcni = False
+
+        # Inicializace a načtení kalibrace BMP180
+        if BMP180_ADDR in scan_results:
+            bmp_calib["AC1"] = bmp180_read_int(0xAA)
+            bmp_calib["AC2"] = bmp180_read_int(0xAC)
+            bmp_calib["AC3"] = bmp180_read_int(0xAE)
+            bmp_calib["AC4"] = bmp180_read_uint(0xB0)
+            bmp_calib["AC5"] = bmp180_read_uint(0xB2)
+            bmp_calib["AC6"] = bmp180_read_uint(0xB4)
+            bmp_calib["B1"]  = bmp180_read_int(0xB6)
+            bmp_calib["B2"]  = bmp180_read_int(0xB8)
+            bmp_calib["MB"]  = bmp180_read_int(0xBA)
+            bmp_calib["MC"]  = bmp180_read_int(0xBC)
+            bmp_calib["MD"]  = bmp180_read_int(0xBD)
+            bmp180_funkcni = True
+            print("[BMP180] Senzor úspěšně nalezen a nakalibrován!")
+        else:
+            print("[⚠️ VAROVÁNÍ] BMP180 neodpověděl.")
+            bmp180_funkcni = False
+            
+        if scd41_funkcni:
+            time.sleep(5)
             
     except Exception as e:
         print("[⚠️ CHYBA] Selhala inicializace I2C sběrnice:", e)
         scd41_funkcni = False
+        bmp180_funkcni = False
 
 def read_scd41():
     if not scd41_funkcni or i2c is None:
@@ -132,6 +156,55 @@ def read_scd41():
         print("[SCD41] Nepodařilo se přečíst data:", e)
     return co2, temp, humi
 
+
+def bmp180_read_int(reg):
+    data = i2c.readfrom_mem(BMP180_ADDR, reg, 2)
+    val = (data[0] << 8) | data[1]
+    return val - 65536 if val >= 32768 else val
+
+def bmp180_read_uint(reg):
+    data = i2c.readfrom_mem(BMP180_ADDR, reg, 2)
+    return (data[0] << 8) | data[1]
+
+def read_bmp180():
+    if not bmp180_funkcni or i2c is None:
+        return None
+    try:
+        # Načtení raw teploty (nutné pro kompenzaci tlaku)
+        i2c.writeto_mem(BMP180_ADDR, 0xF4, b'\x2E')
+        time.sleep_ms(5)
+        ut = bmp180_read_uint(0xF6)
+        
+        # Načtení raw tlaku
+        i2c.writeto_mem(BMP180_ADDR, 0xF4, b'\x34')
+        time.sleep_ms(5)
+        up = bmp180_read_uint(0xF6)
+        
+        # Matematická kompenzace podle datasheetu Bosch
+        x1 = (ut - bmp_calib["AC6"]) * bmp_calib["AC5"] >> 15
+        x2 = (bmp_calib["MC"] << 11) // (x1 + bmp_calib["MD"])
+        b5 = x1 + x2
+        
+        b6 = b5 - 4000
+        x1 = (bmp_calib["B2"] * (b6 * b6 >> 12)) >> 11
+        x2 = bmp_calib["AC2"] * b6 >> 11
+        x3 = x1 + x2
+        b3 = (((bmp_calib["AC1"] * 4 + x3) << 0) + 2) >> 2
+        
+        x1 = bmp_calib["AC3"] * b6 >> 13
+        x2 = (bmp_calib["B1"] * (b6 * b6 >> 12)) >> 16
+        x3 = ((x1 + x2) + 2) >> 2
+        b4 = (bmp_calib["AC4"] * (x3 + 32768)) >> 15
+        b7 = (up - b3) * 50000
+        
+        p = (b7 * 2) // b4 if b7 < 0x80000000 else (b7 // b4) * 2
+        x1 = (p >> 8) * (p >> 8)
+        x1 = (x1 * 3038) >> 16
+        x2 = (-7357 * p) >> 16
+        return (p + ((x1 + x2 + 3791) >> 4)) / 100.0
+    except Exception as e:
+        print("[BMP180] Chyba při čtení tlaku:", e)
+        return None
 
 # Proměnné pro uchování synchronizovaného času
 base_timestamp = 0
@@ -397,7 +470,7 @@ def text_large(text, start_x, start_y, color=0):
             current_x += 14
 
 # Spustíme automatický vyhledávací test senzoru
-init_i2c_and_scd41()
+init_i2c_scd41_bmp180()
 
 # === HLAVNÍ SMYČKA PROGRAMU ===
 while True:
@@ -405,6 +478,7 @@ while True:
     
     # 1. VYČTEME DATA ZE SENZORU SCD41 (Pokud prošel testem)
     co2, s_temp, s_humi = read_scd41()
+    air_pressure = read_bmp180()
     
     # Formátování textů pro e-ink (pokud čtení selže nebo senzor není, hodí se pomlčky)
     if s_temp is not None:
@@ -417,6 +491,7 @@ while True:
     humi_value_str = "{:.0f} %".format(s_humi) if s_humi is not None else "-- %"
     co2_value_str = "{:d} PPM".format(co2) if co2 is not None else "----"
     temp_unit_str = " {}".format(USER_UNITS)
+    pressure_value_str = "{:.0f} hPa".format(air_pressure) if air_pressure is not None else "---- hPa"
 
     # 2. VYKRESLÍME DATA NA DISPLEJ
     print("[3] Volám epd.init()...")
@@ -456,7 +531,7 @@ while True:
 
     # Tlak (SCD41 nemá, zůstávají pomlčky)
     text_large(TXT_PRESSURE, 15, 94, COLOR_FG)
-    text_large("---- hPa", 135, 94, COLOR_FG)    
+    text_large(pressure_value_str, 135, 94, COLOR_FG)   
 
     print("Přetáčím pixely do nativní orientace...")
     for x in range(WIDTH_LANDSCAPE):
@@ -478,16 +553,20 @@ while True:
     wlan = connect_wifi_and_sync_time()
     
     # 4. ODESÍLÁNÍ DAT PŘÍMO DO INFLUXDB (Pouze pokud máme data ze senzoru)
-    if MQTT_ENABLED == 1 and MQTT_BROKER and scd41_funkcni and s_temp is not None:
+    if MQTT_ENABLED == 1 and MQTT_BROKER and (scd41_funkcni or bmp180_funkcni):
         if wlan and wlan.isconnected():
             print("[INFLUX] Odesílám data přímo do databáze...")
             try:
                 url_ip = MQTT_BROKER
                 port = 8086
                 
-                payload = "pocasi,lokace={} teplota={:.2f},vlhkost={:.2f},co2={:d}\n".format(
-                    MQTT_LOCATION, s_temp, s_humi, co2
-                )
+                fields = []
+                if s_temp is not None: fields.append("teplota={:.2f}".format(s_temp))
+                if s_humi is not None: fields.append("vlhkost={:.2f}".format(s_humi))
+                if co2 is not None: fields.append("co2={:d}".format(co2))
+                if air_pressure is not None: fields.append("tlak={:.2f}".format(air_pressure))
+                
+                payload = "pocasi,lokace={} {}\n".format(MQTT_LOCATION, ",".join(fields))
                 
                 s = socket.socket()
                 addr = socket.getaddrinfo(url_ip, port)[0][-1]
