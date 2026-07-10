@@ -1,7 +1,7 @@
 # PicoAir-ePaper
 [WIP] Pi Pico based device with ePaper display to show temperature, humidity, ppm, time and pressure.
 
-I used GoogleAI to generate this README.md so i know what to buy, what features i would like and how to connect it together. I will translate it to english at a later date.
+---
 
 # 🍃 PicoAir ePaper Station
 
@@ -85,7 +85,7 @@ TEXT_PRESSURE="Tlak"
 
 ---
 
-## 🖨️ 3D Tisk & Parametrická krabička (OpenSCAD)
+## 🖨️ 3D Tisk (OpenSCAD)
 
 Pouzdro je kompletně navrženo v programu **OpenSCAD**.
 
