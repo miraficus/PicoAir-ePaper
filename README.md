@@ -3,9 +3,6 @@
 
 I used GoogleAI to generate this README.md so i know what to buy, what features i would like and how to connect it together. I will translate it to english at a later date.
 
-### Links to add later
-https://micropython.org/download/RPI_PICO2_W/
-
 # 🍃 PicoAir ePaper Station
 
 Moderní, energeticky úsporná meteostanice a monitor kvality vzduchu v interiéru postavená na mikrokontroléru **Raspberry Pi Pico W**. Stanice měří teplotu, vlhkost, koncentraci CO₂ a atmosférický tlak. Naměřená data zobrazuje na elegantním e-ink (e-paper) displeji a zároveň je v reálném čase odesílá přes Wi-Fi do databáze **InfluxDB** pro vizualizaci v **Grafaně**.
@@ -84,12 +81,13 @@ TEXT_TEMPERATURE="Teplota"
 TEXT_HUMIDITY="Vlhkost"
 TEXT_PPM="PPM"
 TEXT_PRESSURE="Tlak"
+```
 
 ---
 
 ## 🖨️ 3D Tisk & Parametrická krabička (OpenSCAD)
 
-Pouzdro je kompletně navrženo v programu **OpenSCAD**. Zdrojový soubor `case.scad` je plně parametrický, takže si průměry otvorů pro magnety můžete upravit na začátku souboru.
+Pouzdro je kompletně navrženo v programu **OpenSCAD**.
 
 * **Konstrukce zámků:** V rozích krabičky jsou připraveny otvory s tiskovou tolerancí pro malé magnety z e-cigaret (SYX pody), které drží obě půlky u sebe bez šroubů.
 * **Termální management:** Krabička obsahuje vnitřní přepážku, která izoluje senzor SCD41 od tepla generovaného procesorem Pico 2 W.
