@@ -25,6 +25,10 @@ module cutcase() {
         color("grey")
         translate([58,5,18])
         cube([17,30,3]); 
+        
+        color("grey")
+        translate([7,8,18])
+        cube([17,15,3]); 
     }   
 }  
  
