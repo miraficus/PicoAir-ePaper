@@ -68,7 +68,7 @@ module magnethold() {
         
         translate([3,3,0])
         color("pink")
-        cylinder(d=4, h=6); 
+        cylinder(d=4, h=7); 
     }
 }
 
