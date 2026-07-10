@@ -1,121 +1,95 @@
 # PicoAir-ePaper
-[WIP] Pi Pico based device with ePaper display to show temperature, humidity, ppm and time.
+[WIP] Pi Pico based device with ePaper display to show temperature, humidity, ppm, time and pressure.
 
 I used GoogleAI to generate this README.md so i know what to buy, what features i would like and how to connect it together. I will translate it to english at a later date.
 
 ### Links to add later
-https://github.com/FireHawken/micropython-waveshare-epd2in13
 https://micropython.org/download/RPI_PICO2_W/
 
-# 🍃 PicoAir-ePaper (Open-Source CO2 & Meteo Stanice)
+# 🍃 PicoAir ePaper Station
 
-Tento projekt představuje plně autonomní, nízkoenergetickou a naprosto tichou stanici pro měření kvality vzduchu (**CO₂ v ppm**), teploty a vlhkosti. 
+Moderní, energeticky úsporná meteostanice a monitor kvality vzduchu v interiéru postavená na mikrokontroléru **Raspberry Pi Pico W**. Stanice měří teplotu, vlhkost, koncentraci CO₂ a atmosférický tlak. Naměřená data zobrazuje na elegantním e-ink (e-paper) displeji a zároveň je v reálném čase odesílá přes Wi-Fi do databáze **InfluxDB** pro vizualizaci v **Grafaně**.
 
-Srdcem projektu je **Raspberry Pi Pico 2 W** (čip RP2350), data zobrazuje úsporný **2.13" e-Paper** displej a o přesný čas se stará hardwarový RTC modul **DS3231**. Celé zařízení je navrženo pro maximální výdrž při napájení z recyklované Li-Ion baterie z jednorázové e-cigarety.
+---
 
 ## ✨ Hlavní vlastnosti
-* **Absolutně tichý provoz:** Na rozdíl od běžných stanic (např. IKEA) projekt nevyužívá žádný hlučný větráček. Měření ppm probíhá na bázi přirozené difuze vzduchu.
-* **Modulární hardware a autodetekce:** Firmware při startu automaticky skenuje I²C sběrnici. Pokud chybí CO₂ senzor nebo RTC hodiny, kód se přizpůsobí. Jako nouzový zdroj teploty umí vyčíst interní senzor v CPU Pica.
-* **Modulární vzhled (JSON Layouts & Fonty):** Rozvržení prvků, podpora pro inverzní bloky (černá pozadí pod textem) a vlastní fonty jsou definovány v externím souboru `layouts.json`. Vzhled obrazovky lze měnit bez zásahu do Python kódu.
-* **Jedno chytré tlačítko:** Ovládání celé stanice pomocí jediného fyzického tlačítka na základě délky stisku:
-  * *Krátký stisk:* Přepnutí na další grafické téma (Layout).
-  * *Podržení > 2 sekundy:* Přepnutí do nouzového **Debug menu** (zobrazí surová data, teplotu CPU a reálné napětí baterie i při poškozeném layoutu).
-* **Wi-Fi a NTP synchronizace:** Bezdrátová konektivita slouží k automatickému seřízení přesného času z internetu. Wi-Fi se zapne pouze na pár sekund při startu a poté se hardwarově vypne pro maximální úsporu baterie.
-* **Konfigurace přes `.env`:** Přihlašovací údaje k Wi-Fi, obnovovací frekvence a volba jednotek (°C / °F) jsou bezpečně odděleny v souboru `.env`, který se nenahrává na GitHub.
+- **Komplexní měření:** Sledování klíčových parametrů vzduchu (Teplota, Vlhkost, CO₂ v PPM, Tlak v hPa).
+- **Sdílená I2C sběrnice:** Efektivní paralelní zapojení více senzorů na piny GP18/GP19.
+- **e-Paper Displej:** Nízká spotřeba, perfektní čitelnost na slunci a nativní softwarová rotace obrazu na šířku.
+- **Wi-Fi a NTP synchronizace:** Automatické nastavení přesného času z internetu s vestavěnou detekcí a přepínáním letního/zimního času (DST).
+- **Direct InfluxDB logování:** Odesílání dat přímo z Pica do databáze pomocí HTTP Line Protocolu bez nutnosti mezistupňů.
+- **Úsporný režim:** Kompletní odpojování a hluboký spánek Wi-Fi modulu i displeje mezi měřeními pro šetření baterie.
 
 ---
 
-## 🛒 Kusovník (BOM) & Kde koupit
+## 🛠️ Hardwarové komponenty
+1. **Raspberry Pi Pico W** (mikrokontrolér s Wi-Fi)
+2. **Sensirion SCD41** (fotoakustický senzor CO₂, teploty a vlhkosti)
+3. **Bosch BMP180** (senzor barometrického tlaku a teploty)
+4. **Waveshare e-Paper Displej** (2.13" / 2.9" nebo kompatibilní SPI e-ink)
+5. **TP4056 napájecí modul** Li-Ion / Li-Po baterie + mechanický vypínač (volitelně)
 
-Níže naleznete seznam všech potřebných komponent. Pokud již vlastníte desku Pico a e-Paper displej, zbývající součástky vás vyjdou na **přibližně 900 Kč** (při nákupu z ČR s prémiovým senzorem).
+---
 
-| Komponenta | Popis a specifikace | Kde koupit (Příklad) |
+## 💾 Software & Firmware
+Pro provoz této stanice je vyžadován MicroPython s podporou síťových funkcí. 
+- **Doporučený firmware:** [MicroPython pro Raspberry Pi Pico 2 W / Pico W](https://micropython.org/download/RPI_PICO2_W/) (.uf2 soubor)
+- **Vývojové prostředí:** VS Codium / VS Code s rozšířením *MicroPico*, případně Thonny IDE.
+
+---
+
+## 🔌 Schéma zapojení (Wiring)
+
+Všechny senzory sdílí jednu hardwarovou sběrnici **I2C1**.
+
+### I2C Senzory (SCD41 & BMP180)
+Senzory zapojte paralelně k sobě na následující piny:
+| Senzor Pin | Raspberry Pi Pico W Pin | Popis |
 | :--- | :--- | :--- |
-| **Raspberry Pi Pico 2 W** | Výkonný mikrokontrolér s čipem RP2350 a Wi-Fi konektivitou. | [Pico 2 W na RPishop](https://rpishop.cz) |
-| **Waveshare 2.13" e-Paper (rev2.1)** | Úsporný černobílý displej (250×122 px), spotřebovává energii jen při překreslení. | [Waveshare 2.13" na Botland](https://botland.store) |
-| **LaskaKit SCD41** | Špičkový, tichý fotoakustický senzor CO₂ (ppm), teploty a vlhkosti vzduchu. | [Senzor SCD41 na LaskaKit](https://laskakit.cz) |
-| **Modul RTC DS3231** | Extrémně přesné hardwarové hodiny reálného času komunikující přes I²C. | [Modul DS3231 na LaskaKit](https://laskakit.cz) |
-| **Nabíjecí modul TP4056** | Nabíječka Li-Ion baterií přes USB-C s integrovanou ochranou proti podbití. | [TP4056 USB-C na LaskaKit](https://laskakit.cz) |
-| **Baterie z e-cigarety** | Recyklovaný Li-Ion článek (např. typ 13300/13400) o kapacitě cca 350-500 mAh. | *Zdarma (Recyklace)* |
-| **Malé neodymové magnety** | Vykuchané z podů e-cigaret (např. SYX podů). Slouží jako neviditelný zámek obou půlek krabičky. | *Zdarma (Recyklace)* |
-| **Větší neodymové magnety** | Silnější magnety zapuštěné do zadní stěny pro uchycení stanice na lednici nebo futra. | Vlastní zásoby / e-shop |
-| **Taktilní tlačítko (1ks)** | Obyčejné spínací tlačítko do DPS nebo krabičky pro ovládání stanice. | Jakýkoliv elektro obchod |
+| **3.3V / VCC** | 3.3V (Pin 36) | Napájení (BMP180 připojte na 3.3V pin, nikoliv VCC!) |
+| **GND** | GND | Společná zem |
+| **SDA** | GP18 (Pin 24) | Datová linka I2C1 |
+| **SCL** | GP19 (Pin 25) | Hodinová linka I2C1 |
+
+### e-Paper Displej (SPI)
+| Displej Pin | Raspberry Pi Pico W Pin | Popis |
+| :--- | :--- | :--- |
+| **BUSY** | GP4 (Pin 6) | Input s PULL_DOWN |
+| **RST** | GP1 (Pin 2) | Reset displeje |
+| **DC** | GP0 (Pin 1) | Data/Command selection |
+| **CS** | GP5 (Pin 7) | Chip Select |
+| **SCLK** | GP2 (Pin 4) | SPI Clock |
+| **DIN / MOSI** | GP3 (Pin 5) | SPI Master Out |
+| **VCC** | 3.3V | Napájení |
+| **GND** | GND | Zem |
 
 ---
 
-## 🗺️ Schéma zapojení (Pinout)
+## ⚙️ Softwarová konfigurace (`.env`)
 
-Všechny periferie se připojují přímo na piny Raspberry Pi Pico 2 W podle následujícího schématu. Displej využívá sběrnici SPI0, zatímco senzor CO₂ a hodiny RTC sdílejí společnou I²C1 sběrnici. Měření napětí baterie (VSYS) probíhá interně přes ADC29.
+Pro správný běh stanice vytvořte v kořenovém adresáři soubor `.env` (Pico si konfiguraci načte automaticky):
 
-```text
-       [ RASPBERRY PI PICO 2 W ]
-             +-----------+
-  (SPI) DC --| 1      40 |-- VBUS (Snímání 5V z USB pro indikaci nabíjení)
- (SPI) RST --| 2      39 |-- VSYS <--- Výstup OUT+ z nabíječky TP4056
-       GND --| 3      38 |-- GND  <--- Společná zem (OUT- z TP4056)
-(SPI) BUSY --| 4      37 |-- 3V3_EN
-  (SPI) CS --| 5      36 |-- 3V3 OUT ---> [Společné VCC pro displej, RTC i SCD41]
- (SPI) CLK --| 6      35 |-- GP28
- (SPI) DIN --| 7      34 |-- GND
-
-             |           |
- (Tlačítko) -| GP6    GP27 |- SCL    ---> [Společný SCL pro RTC i CO2 senzor]
-
-             |        GP26 |- SDA    ---> [Společný SDA pro RTC i CO2 senzor]
-             +-----------+
-```
-
----
-
-## 📂 Struktura souborů v projektu
-
-Pro správný vývoj ve **VS Code (s rozšířením MicroPico)** a následný běh v zařízení dodržujte tuto strukturu:
-
-```text
-💾 PicoAir-ePaper (Root repositáře)
- ├── 📁 3D_Models/            # Parametrický model krabičky pro 3D tisk
- │    ├── 📄 krabicka.scad    # Zdrojový kód pro OpenSCAD
- │    ├── 📄 predni_dil.3mf   # Export pro moderní slicery
- │    └── 📄 zadni_dil.3mf    # Export pro moderní slicery
- ├── 📁 firmware/             # Kompletní kód pro nahrání do Pica
- │    ├── 📄 main.py          # Hlavní program / firmware stanice
- │    ├── 📄 settings.json    # Automaticky ukládaný stav (aktivní téma atd.)
- │    ├── 📄 layouts.json     # Definice souřadnic, inverzí a fontů pro témata
- │    └── 📁 drivers/
- │         ├── 📄 epd2in13_V2.py # Ovladač pro Waveshare e-Paper
- │         ├── 📄 ds3231.py      # Ovladač pro RTC modul
- │         └── 📄 scd4x.py       # Ovladač pro CO2 senzor
- ├── 📄 .gitignore            # Ignoruje lokální .env a settings.json
- ├── 📄 .env.example          # Vzorový konfigurační soubor pro uživatele
- └── 📄 README.md             # Tato dokumentace
-```
-
----
-
-## ⚙️ Konfigurace souboru `.env`
-
-Před prvním nahráním kódu vytvořte v kořenovém adresáři soubor `.env`. Zde můžete nastavit jednotky teploty a obnovovací frekvenci.
-
-```text
-WIFI_SSID="Nazev_Vasi_Wifi"
-WIFI_PASSWORD="Vase_Tajne_Heslo"
-
-# Konfigurace stanice
-TEMPERATURE_UNIT="C"         # Možnosti: "C" pro Celsius, "F" pro Fahrenheit
-DISPLAY_REFRESH_RATE=60      # Frekvence měření a obnovy displeje v sekundách
-```
+```env
+WIFI_SSID="Nazev_Tvoji_Wifi"
+WIFI_PASSWORD="Heslo_K_Wifi"
+MQTT_ENABLED=1
+MQTT_BROKER="IP_Adresa_Tveho_Serveru"
+MQTT_LOCATION="Pokoj"
+REFRESH_RATE=300
+DARK_MODE=0
+UNITS="C"
+NTP_ADDRESS="time.windows.com"
+UTC_TIMEZONE=1
+TEXT_TEMPERATURE="Teplota"
+TEXT_HUMIDITY="Vlhkost"
+TEXT_PPM="PPM"
+TEXT_PRESSURE="Tlak"
 
 ---
 
 ## 🖨️ 3D Tisk & Parametrická krabička (OpenSCAD)
 
-Pouzdro je kompletně navrženo v programu **OpenSCAD**. Zdrojový soubor `krabicka.scad` je plně parametrický, takže si průměry otvorů pro magnety můžete upravit na začátku souboru.
+Pouzdro je kompletně navrženo v programu **OpenSCAD**. Zdrojový soubor `case.scad` je plně parametrický, takže si průměry otvorů pro magnety můžete upravit na začátku souboru.
 
 * **Konstrukce zámků:** V rozích krabičky jsou připraveny otvory s tiskovou tolerancí pro malé magnety z e-cigaret (SYX pody), které drží obě půlky u sebe bez šroubů.
-* **Uchycení na lednici:** Na zadní straně jsou hlubší kapsy pro větší neodymové magnety, které jsou v přímém kontaktu s kovovým povrchem.
-* **Termální management:** Krabička obsahuje vnitřní přepážku, která izoluje senzor SCD41 od tepla generovaného procesorem Pico 2 W. Větrací otvory jsou umístěny na spodní i horní hraně komory senzoru pro zajištění přirozeného komínového proudění vzduchu.
-
----
-
-## 🛡️ Ochrana e-Paper displeje (Anti-Ghosting)
-Kód v `main.py` obsahuje bezpečnostní mechanismus, který počítá částečná obnovení obrazovky (*partial refresh*). Aby nedocházelo k degradaci e-paperu a vzniku "duchů", firmware automaticky po každých 20 cyklech vyvolá jeden kompletní plný refresh (*full refresh*), který displej stoprocentně vyčistí.
+* **Termální management:** Krabička obsahuje vnitřní přepážku, která izoluje senzor SCD41 od tepla generovaného procesorem Pico 2 W.
