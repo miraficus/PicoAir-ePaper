@@ -36,7 +36,7 @@ module magnethold() {
     difference() {
         translate([3,3,0])
         color("red")
-        cylinder(d=6, h=18);
+        cylinder(d=6, h=19);
         
         translate([3,3,0])
         color("pink")
@@ -58,11 +58,11 @@ module magnetholds() {
 }
 
 module caseholds() {
-    translate([1,15,-2])
+    translate([1,14,-2])
     color("lightgreen")
     chamferCube([1, 12, 8], [[1, 1, 0, 0], [1, 0, 1, 1], [0, 0, 0, 0]], 0.5);
 
-    translate([78,15,-2])
+    translate([78,14,-2])
     color("lightgreen")
     chamferCube([1, 12, 8], [[1, 1, 0, 0], [1, 1, 0, 1], [0, 0, 0, 0]], 0.5);
 
